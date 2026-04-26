@@ -1059,6 +1059,16 @@ class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var refreshTimer: Timer?
     var installSheet: InstallSheetController?
 
+    // Cached state so the timer can update widgets in-place instead of tearing
+    // down and rebuilding the body stack every tick (which causes visible flicker).
+    private var lastRenderedStatus: InstallStatus?
+    private weak var liveStatusLabel: NSTextField?
+    private weak var liveCard: DataCardView?
+    private weak var liveLog: LogPanelView?
+    private var liveCardRowsKey: String?
+    private var liveLogTextKey: String?
+    private var liveStatusLabelKey: String?
+
     func applicationDidFinishLaunching(_ n: Notification) {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
@@ -1121,12 +1131,24 @@ class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         window.makeKeyAndOrderFront(nil)
     }
 
-    /// Replace the body stack contents with views appropriate for the current install state.
+    /// Refresh the body stack. On status change → full rebuild. Otherwise → in-place update
+    /// of the live widgets so the panel does not flicker every 2.5 s.
     func refreshUI() {
-        bodyStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
-
         let status = InstallManager.currentStatus()
         let cfg = loadConfig()
+
+        if lastRenderedStatus == status {
+            updateLiveValues(status: status, cfg: cfg)
+            return
+        }
+
+        bodyStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        liveStatusLabel = nil
+        liveCard = nil
+        liveLog = nil
+        liveCardRowsKey = nil
+        liveLogTextKey = nil
+        liveStatusLabelKey = nil
 
         switch status {
         case .notInstalled:
@@ -1137,6 +1159,57 @@ class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         case .stopped:
             renderStopped(cfg: cfg)
+        }
+
+        lastRenderedStatus = status
+    }
+
+    private static func cacheKey(for rows: [DataCardView.Row]) -> String {
+        rows.map { "\($0.key)|\($0.value)|\($0.badgeTone.map { "\($0)" } ?? "-")" }.joined(separator: "/")
+    }
+
+    private func updateLiveValues(status: InstallStatus, cfg: Config?) {
+        switch status {
+        case .notInstalled:
+            return
+
+        case .running(let pid):
+            let newLabel = uptimeString(pid: pid)
+            if liveStatusLabelKey != newLabel {
+                liveStatusLabel?.stringValue = newLabel
+                liveStatusLabelKey = newLabel
+            }
+            let state = currentState()
+            let rows: [DataCardView.Row] = [
+                .init(key: "PID", value: formatPID(pid), mono: true),
+                .init(key: "Active display", value: state.activeDisplayName),
+                .init(key: "Locked", value: state.locked ? "Yes" : "No",
+                      badgeTone: state.locked ? .red : .green),
+                .init(key: "Entity prefix", value: cfg?.entityPrefix ?? "—", mono: true),
+                .init(key: "Home Assistant", value: hostFromURL(cfg?.haURL ?? "—"), mono: true),
+            ]
+            let rowsKey = AppController.cacheKey(for: rows)
+            if liveCardRowsKey != rowsKey {
+                liveCard?.setRows(rows)
+                liveCardRowsKey = rowsKey
+            }
+            let newLog = InstallManager.recentLog(lines: 18)
+            if liveLogTextKey != newLog {
+                liveLog?.setLog(newLog, meta: "~/Library/Logs/macbook-ha-bridge.log · last 18 lines")
+                liveLogTextKey = newLog
+            }
+
+        case .stopped:
+            let newLabel = downtimeString()
+            if liveStatusLabelKey != newLabel {
+                liveStatusLabel?.stringValue = newLabel
+                liveStatusLabelKey = newLabel
+            }
+            let newLog = InstallManager.recentLog(lines: 18)
+            if liveLogTextKey != newLog {
+                liveLog?.setLog(newLog, meta: "tail of last log")
+                liveLogTextKey = newLog
+            }
         }
     }
 
@@ -1214,6 +1287,8 @@ class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let uptime = NSTextField(labelWithString: uptimeString(pid: pid))
         uptime.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         uptime.textColor = .tertiaryLabelColor
+        liveStatusLabel = uptime
+        liveStatusLabelKey = uptime.stringValue
 
         let header = NSStackView(views: [pill, NSView(), uptime])
         header.orientation = .horizontal
@@ -1228,14 +1303,17 @@ class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         // Live data card
         let state = currentState()
         let card = DataCardView()
-        card.setRows([
+        let rows: [DataCardView.Row] = [
             .init(key: "PID", value: formatPID(pid), mono: true),
             .init(key: "Active display", value: state.activeDisplayName),
             .init(key: "Locked", value: state.locked ? "Yes" : "No",
                   badgeTone: state.locked ? .red : .green),
             .init(key: "Entity prefix", value: cfg?.entityPrefix ?? "—", mono: true),
             .init(key: "Home Assistant", value: hostFromURL(cfg?.haURL ?? "—"), mono: true),
-        ])
+        ]
+        card.setRows(rows)
+        liveCard = card
+        liveCardRowsKey = AppController.cacheKey(for: rows)
         bodyStack.addArrangedSubview(card)
         card.widthAnchor.constraint(equalTo: bodyStack.widthAnchor).isActive = true
 
@@ -1256,8 +1334,10 @@ class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
         // Log section — fills the remaining space.
         let log = LogPanelView()
-        log.setLog(InstallManager.recentLog(lines: 18),
-                   meta: "~/Library/Logs/macbook-ha-bridge.log · last 18 lines")
+        let logText = InstallManager.recentLog(lines: 18)
+        log.setLog(logText, meta: "~/Library/Logs/macbook-ha-bridge.log · last 18 lines")
+        liveLog = log
+        liveLogTextKey = logText
         bodyStack.addArrangedSubview(log)
         log.widthAnchor.constraint(equalTo: bodyStack.widthAnchor).isActive = true
         log.setContentHuggingPriority(.defaultLow, for: .vertical)
@@ -1272,6 +1352,8 @@ class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         let down = NSTextField(labelWithString: downtimeString())
         down.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
         down.textColor = .tertiaryLabelColor
+        liveStatusLabel = down
+        liveStatusLabelKey = down.stringValue
 
         let header = NSStackView(views: [pill, NSView(), down])
         header.orientation = .horizontal
@@ -1315,8 +1397,10 @@ class AppController: NSObject, NSApplicationDelegate, NSWindowDelegate {
         actions.widthAnchor.constraint(equalTo: bodyStack.widthAnchor).isActive = true
 
         let log = LogPanelView()
-        log.setLog(InstallManager.recentLog(lines: 18),
-                   meta: "tail of last log")
+        let logText = InstallManager.recentLog(lines: 18)
+        log.setLog(logText, meta: "tail of last log")
+        liveLog = log
+        liveLogTextKey = logText
         bodyStack.addArrangedSubview(log)
         log.widthAnchor.constraint(equalTo: bodyStack.widthAnchor).isActive = true
         log.setContentHuggingPriority(.defaultLow, for: .vertical)
