@@ -207,6 +207,10 @@ enum InstallManager {
     static let plistPath = ("~/Library/LaunchAgents/cz.lnrt.macbook-ha-bridge.plist" as NSString).expandingTildeInPath
     static let logDir = ("~/Library/Logs" as NSString).expandingTildeInPath
     static let logPath = ("~/Library/Logs/macbook-ha-bridge.log" as NSString).expandingTildeInPath
+    // Daemon binary lives outside the .app so LaunchServices does not treat the running
+    // daemon process as an instance of the GUI bundle (which would block reopening the .app).
+    static let daemonDir = ("~/Library/Application Support/macbook-ha-bridge" as NSString).expandingTildeInPath
+    static var daemonBinaryPath: String { daemonDir + "/macbook-ha-bridge-daemon" }
 
     static func currentStatus() -> InstallStatus {
         guard FileManager.default.fileExists(atPath: plistPath) else { return .notInstalled }
@@ -303,7 +307,8 @@ enum InstallManager {
 
     static func install(config: Config, binaryPath: String) throws {
         try saveConfig(config)
-        try writePlist(binaryPath: binaryPath)
+        try installDaemonBinary(from: binaryPath)
+        try writePlist(binaryPath: daemonBinaryPath)
         _ = runLaunchctl(["bootout", "gui/\(getuid())/\(plistLabel)"])
         Thread.sleep(forTimeInterval: 0.8)
         let rc = runLaunchctl(["bootstrap", "gui/\(getuid())", plistPath])
@@ -313,10 +318,34 @@ enum InstallManager {
         }
     }
 
+    static func installDaemonBinary(from sourcePath: String) throws {
+        try FileManager.default.createDirectory(
+            atPath: daemonDir,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700])
+
+        // Stage to a temp path in the same directory then atomic-rename over the
+        // destination. Avoids the TOCTOU window between remove/copy and prevents
+        // a hostile symlink at the destination from being followed.
+        let tmpPath = daemonDir + "/.macbook-ha-bridge-daemon.\(getpid()).tmp"
+        try? FileManager.default.removeItem(atPath: tmpPath)
+        try FileManager.default.copyItem(atPath: sourcePath, toPath: tmpPath)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: tmpPath)
+
+        if rename(tmpPath, daemonBinaryPath) != 0 {
+            let code = errno
+            try? FileManager.default.removeItem(atPath: tmpPath)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code),
+                          userInfo: [NSLocalizedDescriptionKey:
+                            "rename(\(tmpPath) → \(daemonBinaryPath)) failed: \(String(cString: strerror(code)))"])
+        }
+    }
+
     static func uninstall() {
         _ = runLaunchctl(["bootout", "gui/\(getuid())/\(plistLabel)"])
         try? FileManager.default.removeItem(atPath: plistPath)
         try? FileManager.default.removeItem(atPath: configPath)
+        try? FileManager.default.removeItem(atPath: daemonDir)
     }
 
     static func kickstart() {
