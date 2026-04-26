@@ -1,0 +1,31 @@
+# Build artifacts
+build/
+*.dmg
+*.zip
+
+# Real config (never commit a token!)
+config.json
+~/.config/macbook-ha-bridge/
+
+# macOS junk
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Stray extraction folders
+mnt/
+
+# Compiled helpers (built on demand)
+mhb-arm64
+mhb-x86
+mhb-mask
+mhb-mkbg
+logo-masked.png
+mhb-dmg-bg.png
+AppIcon.iconset/
