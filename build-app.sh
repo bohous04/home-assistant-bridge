@@ -134,15 +134,21 @@ na pozadí (řízený launchd). Když chceš znova vidět
 status, znova otevři aplikaci.
 README
 
-# Background image: vertical gradient with arrow text
-if [[ -f "$LOGO_SRC" ]]; then
-    BG=/tmp/mhb-dmg-bg.png
+# Background image: prefer dmg_bg.png from project, else generate via Swift, else skip.
+# DMG window content is 648×408 (1x) so a 1296×816 PNG renders at Retina 2x.
+if [[ -f "$SCRIPT_DIR/dmg_bg.png" ]]; then
+    cp "$SCRIPT_DIR/dmg_bg.png" "$DMG_STAGE/.background/background.png"
+    echo "    using $SCRIPT_DIR/dmg_bg.png"
+elif [[ -f "$SCRIPT_DIR/dmg_bg.jpg" ]]; then
+    sips -s format png "$SCRIPT_DIR/dmg_bg.jpg" --out "$DMG_STAGE/.background/background.png" >/dev/null
+    echo "    using $SCRIPT_DIR/dmg_bg.jpg (converted to png)"
+elif [[ -f "$SCRIPT_DIR/make-dmg-bg.swift" ]]; then
     swiftc -O "$SCRIPT_DIR/make-dmg-bg.swift" -o /tmp/mhb-mkbg 2>/dev/null && \
-        /tmp/mhb-mkbg "$BG" || echo "    (background gen failed, skipping)"
-    [[ -f "$BG" ]] && cp "$BG" "$DMG_STAGE/.background/background.png"
+        /tmp/mhb-mkbg "$DMG_STAGE/.background/background.png" || echo "    (background gen failed)"
 fi
 
-# Create writable DMG, mount, set Finder layout, then convert to compressed read-only
+# Create writable DMG, mount, set Finder layout, then convert to compressed read-only.
+# Window: 648×408 content area (matches 1296×816 background at 2x Retina).
 hdiutil create -srcfolder "$DMG_STAGE" -volname "$DMG_VOL" \
     -fs HFS+ -fsargs "-c c=64,a=16,e=16" \
     -format UDRW -size 50m -ov "$DMG_TMP" >/dev/null
@@ -157,17 +163,17 @@ tell application "Finder"
         set current view of container window to icon view
         set toolbar visible of container window to false
         set statusbar visible of container window to false
-        set the bounds of container window to {200, 200, 920, 660}
+        set the bounds of container window to {200, 200, 848, 630}
         set theViewOptions to the icon view options of container window
         set arrangement of theViewOptions to not arranged
-        set icon size of theViewOptions to 128
-        set text size of theViewOptions to 13
+        set icon size of theViewOptions to 96
+        set text size of theViewOptions to 12
         try
             set background picture of theViewOptions to file ".background:background.png"
         end try
-        set position of item "macbook-ha-bridge.app" of container window to {180, 230}
-        set position of item "Applications" of container window to {540, 230}
-        set position of item "READ ME FIRST.txt" of container window to {360, 380}
+        set position of item "macbook-ha-bridge.app" of container window to {149, 212}
+        set position of item "Applications" of container window to {492, 212}
+        set position of item "READ ME FIRST.txt" of container window to {304, 318}
         update without registering applications
         delay 1
         close
